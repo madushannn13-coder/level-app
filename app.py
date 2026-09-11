@@ -21,8 +21,7 @@ uploaded_file = st.file_uploader("Upload a photo of the Level Sheet", type=['jpg
 
 def extract_table_from_image(text_annotations):
     """
-    ඡායාරූපයේ ඇති වචන වල X, Y ඛණ්ඩාංක (Coordinates) පදනම් කරගෙන 
-    වගුවක් ලෙස සකස් කිරීමේ තාක්ෂණය.
+    X, Y ඛණ්ඩාංක (Coordinates) පදනම් කරගෙන වගුවක් ලෙස සකස් කිරීම.
     """
     if len(text_annotations) < 2: return []
     
@@ -33,7 +32,6 @@ def extract_table_from_image(text_annotations):
         y_center = sum([v.y for v in vertices]) / 4
         words.append({'text': annotation.description, 'x': x_center, 'y': y_center})
         
-    # Y අක්ෂය අනුව ඉහළ සිට පහළට පෙළගැස්වීම
     words.sort(key=lambda w: w['y'])
     
     rows = []
@@ -41,11 +39,9 @@ def extract_table_from_image(text_annotations):
     
     current_row = [words[0]]
     for word in words[1:]:
-        # Y අගයේ වෙනස පික්සල් 20 කට වඩා අඩු නම් එය එකම පේළියක් ලෙස සලකයි
         if abs(word['y'] - current_row[0]['y']) < 20:
             current_row.append(word)
         else:
-            # පේළියක් ඇතුලත වමේ සිට දකුණට (X අක්ෂය අනුව) පෙළගැස්වීම
             current_row.sort(key=lambda w: w['x'])
             rows.append(" ".join([w['text'] for w in current_row]))
             current_row = [word]
@@ -64,16 +60,13 @@ def parse_to_dataframe(rows):
     
     for row in rows:
         matches = float_pattern.findall(row)
-        if not matches:
-            continue
+        if not matches: continue
             
-        numbers = [float(m) for m in matches if float(m) < 1000.0] # විශාල ඉලක්කම් (උදා: වර්ෂය) ඉවත් කිරීම
-        if not numbers:
-            continue
+        numbers = [float(m) for m in matches if float(m) < 1000.0]
+        if not numbers: continue
             
-        row_data = {'Chainage/Station': '', 'BS': 0.0, 'IS': 0.0, 'FS': 0.0, 'Remarks': ''}
+        row_data = {'Station': '', 'BS': 0.0, 'IS': 0.0, 'FS': 0.0, 'Remarks': ''}
         
-        # ඉලක්කම් ගණන අනුව තීරුවලට වෙන් කිරීම
         if len(numbers) == 1:
              row_data['IS'] = numbers[0]
         elif len(numbers) == 2:
@@ -87,33 +80,35 @@ def parse_to_dataframe(rows):
         parsed_data.append(row_data)
         
     if not parsed_data:
-        # හිස් වගුවක් යැවීම
-        return pd.DataFrame(columns=['Chainage/Station', 'BS', 'IS', 'FS', 'Remarks'])
+        return pd.DataFrame(columns=['Station', 'BS', 'IS', 'FS', 'Remarks'])
     return pd.DataFrame(parsed_data)
 
 if uploaded_file is not None:
+    # Error එක විසඳීම සඳහා File එක Bytes ලෙස කියවා ගැනීම
+    image_bytes = uploaded_file.getvalue()
+    
     col1, col2 = st.columns([1, 2])
     with col1:
-        st.image(uploaded_file, caption='Uploaded Image', use_column_width=True)
+        # රූපය පෙන්වීම (use_container_width යාවත්කාලීන කර ඇත)
+        st.image(image_bytes, caption='Uploaded Level Sheet', use_container_width=True)
     
     with col2:
-        if 'raw_df' not in st.session_state:
+        # අලුත් ඡායාරූපයක් දැමූ විට පමණක් නැවත කියවීම සඳහා Session State පරීක්ෂාව
+        if 'current_file' not in st.session_state or st.session_state.current_file != uploaded_file.name:
+            st.session_state.current_file = uploaded_file.name
+            
             with st.spinner("අකුරු සහ ඉලක්කම් කියවමින් පවතී..."):
-                content = uploaded_file.read()
-                image = vision.Image(content=content)
+                image = vision.Image(content=image_bytes)
                 response = client.document_text_detection(image=image)
-                
                 rows = extract_table_from_image(response.text_annotations)
                 st.session_state.raw_df = parse_to_dataframe(rows)
         
         st.success("✅ දත්ත කියවීම අවසන්!")
-        st.info("💡 **උපදෙසක්:** පහත වගුවේ ඉලක්කම් වැරදි තීරුවක (Column) ඇත්නම්, ඒ මත Click කර නිවැරදි කරන්න. අලුතින් පේළි එකතු කිරීමටද හැක.")
+        st.info("💡 **උපදෙසක්:** පහත වගුවේ ඉලක්කම් වැරදි තීරුවක (Column) ඇත්නම්, ඒ මත Click කර නිවැරදි කරන්න.")
         
-        # මෙතැනින් තමයි පරිශීලකයාට වගුව Edit කරන්න දෙන්නේ (Data Editor)
         edited_df = st.data_editor(st.session_state.raw_df, num_rows="dynamic", use_container_width=True)
         
         st.markdown("---")
-        # ආරම්භක RL අගය App එකෙන්ම ලබා දීම
         bm_value = st.number_input("ආරම්භක Benchmark (BM) R.L අගය ඇතුලත් කරන්න:", value=100.000, format="%.3f")
         
         if st.button("🚀 Calculate Reduced Levels & Download Excel", type="primary"):
@@ -124,9 +119,10 @@ if uploaded_file is not None:
                 current_RL = bm_value
                 
                 for index, row in edited_df.iterrows():
-                    bs = float(row['BS']) if pd.notna(row['BS']) else 0.0
-                    is_val = float(row['IS']) if pd.notna(row['IS']) else 0.0
-                    fs = float(row['FS']) if pd.notna(row['FS']) else 0.0
+                    # හිස් කොටු (Empty cells) ඇත්නම් ඒවා 0.0 ලෙස සලකයි
+                    bs = float(row['BS']) if pd.notna(row['BS']) and str(row['BS']).strip() != '' else 0.0
+                    is_val = float(row['IS']) if pd.notna(row['IS']) and str(row['IS']).strip() != '' else 0.0
+                    fs = float(row['FS']) if pd.notna(row['FS']) and str(row['FS']).strip() != '' else 0.0
                     
                     if index == 0:
                         current_HI = current_RL + bs
@@ -140,14 +136,13 @@ if uploaded_file is not None:
                         elif fs > 0:
                             current_RL = current_HI - fs
                             RLs.append(current_RL)
-                            if bs > 0: # Change Point (CP)
+                            if bs > 0: # Change Point
                                 current_HI = current_RL + bs
                             HIs.append(current_HI)
                         else:
                             RLs.append(current_RL)
                             HIs.append(current_HI)
 
-                # පිළිතුර දශම 3කට සැකසීම
                 final_df = edited_df.copy()
                 final_df['H.I'] = [round(val, 3) for val in HIs]
                 final_df['R.L'] = [round(val, 3) for val in RLs]
@@ -155,7 +150,6 @@ if uploaded_file is not None:
                 st.write("### අවසන් ප්‍රතිඵලය (Final Reduced Levels):")
                 st.dataframe(final_df, use_container_width=True)
                 
-                # Excel File එක සැකසීම
                 excel_file = io.BytesIO()
                 final_df.to_excel(excel_file, index=False, engine='openpyxl')
                 excel_file.seek(0)
