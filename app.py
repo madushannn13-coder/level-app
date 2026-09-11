@@ -9,7 +9,6 @@ import re
 st.set_page_config(page_title="Level Sheet Reducer", page_icon="📏", layout="wide")
 st.title("Level Sheet Reducer & Editor 📏")
 
-# 1. API Key එක ලබාගැනීම
 try:
     key_dict = json.loads(st.secrets["textkey"])
     creds = service_account.Credentials.from_service_account_info(key_dict)
@@ -19,83 +18,97 @@ except Exception as e:
 
 uploaded_file = st.file_uploader("Upload a photo of the Level Sheet", type=['jpg', 'png', 'jpeg'])
 
-def extract_table_from_image(text_annotations):
-    """ X, Y ඛණ්ඩාංක (Coordinates) මත පදනම්ව පේළි සකස් කිරීම. """
-    if len(text_annotations) < 2: return []
+def process_vision_data(text_annotations):
+    """
+    ඡායාරූපයේ ඛණ්ඩාංක (X, Y) මගින් හරියටම තීරුවලට (Columns) දත්ත වෙන් කිරීම.
+    """
+    if len(text_annotations) < 2: return pd.DataFrame()
     
     words = []
+    max_x = 0
+    # වචන වල X සහ Y ඛණ්ඩාංක ලබාගැනීම
     for annotation in text_annotations[1:]:
         vertices = annotation.bounding_poly.vertices
         x_center = sum([v.x for v in vertices]) / 4
         y_center = sum([v.y for v in vertices]) / 4
-        words.append({'text': annotation.description, 'x': x_center, 'y': y_center})
+        text = annotation.description
+        words.append({'text': text, 'x': x_center, 'y': y_center})
+        if x_center > max_x: max_x = x_center
         
-    words.sort(key=lambda w: w['y'])
+    if max_x == 0: max_x = 1 # බිංදුවෙන් බෙදීම වැලැක්වීම
     
+    # 1. 'Chainage' හෝ 'B/S' වචනය ඇති තැන (Y අගය) සොයාගැනීම 
+    header_y = 0
+    for w in words:
+        if w['text'].upper() in ['CHAINAGE', 'B/S', 'I/S']:
+            header_y = w['y']
+            break
+            
+    # වගුවට ඉහළින් ඇති අනවශ්‍ය Header කොටස් (REHABILITATION, CONTRACT...) ඉවත් කිරීම
+    if header_y > 0:
+        words = [w for w in words if w['y'] > header_y - 15]
+        
+    # 2. Y අගය අනුව පේළි (Rows) සෑදීම
+    words.sort(key=lambda w: w['y'])
     rows = []
-    if not words: return rows
+    if not words: return pd.DataFrame()
     
     current_row = [words[0]]
     for word in words[1:]:
-        if abs(word['y'] - current_row[0]['y']) < 20:
+        if abs(word['y'] - current_row[0]['y']) < 25: # අකුරු වල උස අනුව වෙනස (Tolerance)
             current_row.append(word)
         else:
             current_row.sort(key=lambda w: w['x'])
-            rows.append(" ".join([w['text'] for w in current_row]))
+            rows.append(current_row)
             current_row = [word]
     if current_row:
         current_row.sort(key=lambda w: w['x'])
-        rows.append(" ".join([w['text'] for w in current_row]))
+        rows.append(current_row)
         
-    return rows
-
-def parse_to_dataframe(rows):
-    """ ඔයාගේ ඇත්තම Sheet එකේ තීරු වලට ගැලපෙන ලෙස දත්ත වෙන් කිරීම """
+    # 3. X අගය (තිරස් පිහිටීම) අනුව අදාල තීරුවට (Column) වෙන් කිරීම
     parsed_data = []
-    float_pattern = re.compile(r'-?\d+\.\d+')
-    
     for row in rows:
-        # අනවශ්‍ය Header වචන අතහැරීම
-        if any(w in row.upper() for w in ["CONTRACT", "DATE", "ENGINEER", "MÄGA", "SMEC"]): 
+        row_text = " ".join([w['text'] for w in row]).upper()
+        # මගහැරුණු Header පේළි ඇත්නම් ඉවත් කිරීම
+        if "CHAINAGE" in row_text or "REMARKS" in row_text or "LEVEL" in row_text:
             continue
             
-        # Chainage අගයන් (උදා: 72+, 72+580) හඳුනාගැනීම
-        chainage_match = re.search(r'\d+\+\d*', row)
-        chainage = chainage_match.group(0) if chainage_match else ""
+        row_dict = {'Chainage': '', 'B/S': '', 'I/S': '', 'F/S': '', 'HOC': '', 'R/L': '', 'D/L': '', 'D/F': '', 'LHS': '', 'RHS': '', 'Remarks': ''}
         
-        # ඉලක්කම් වෙන්කරගැනීම
-        row_without_chainage = row.replace(chainage, "") if chainage else row
-        matches = float_pattern.findall(row_without_chainage)
-        numbers = [float(m) for m in matches if abs(float(m)) < 1000.0]
-        
-        # වචන Remarks වලට දැමීම
-        words = [w for w in row_without_chainage.split() if not re.match(r'-?\d+\.\d+', w) and w != chainage]
-        remarks = " ".join(words)
-        
-        # Sheet එකේ තියෙන හරියටම Columns ටික
-        row_data = {
-            'Chainage': chainage,
-            'B/S': '', 'I/S': '', 'F/S': '', 
-            'HOC': '', 'R/L': '', 
-            'D/L': '', 'D/F': '', 
-            'LHS': '', 'RHS': '', 
-            'Remarks': remarks
-        }
-        
-        # හමුවන ඉලක්කම් වගුවට පිරවීම (පසුව Editor එකෙන් හදාගත හැක)
-        if len(numbers) > 0: row_data['B/S'] = numbers[0]
-        if len(numbers) > 1: row_data['I/S'] = numbers[1]
-        if len(numbers) > 2: row_data['F/S'] = numbers[2]
-        if len(numbers) > 3: row_data['D/L'] = numbers[3]
-        if len(numbers) > 4: row_data['LHS'] = numbers[4]
-             
-        parsed_data.append(row_data)
-        
-    if not parsed_data:
-        return pd.DataFrame(columns=['Chainage', 'B/S', 'I/S', 'F/S', 'HOC', 'R/L', 'D/L', 'D/F', 'LHS', 'RHS', 'Remarks'])
+        for w in row:
+            x_ratio = w['x'] / max_x
+            text = w['text']
+            
+            # කොළයේ පළල ප්‍රතිශතයක් ලෙස ගෙන තීරු වලට බෙදීම (Spatial Binning)
+            if x_ratio < 0.16: row_dict['Chainage'] += text + " "
+            elif x_ratio < 0.23: row_dict['B/S'] += text + " "
+            elif x_ratio < 0.31: row_dict['I/S'] += text + " "
+            elif x_ratio < 0.38: row_dict['F/S'] += text + " "
+            elif x_ratio < 0.46: row_dict['HOC'] += text + " "
+            elif x_ratio < 0.54: row_dict['R/L'] += text + " "
+            elif x_ratio < 0.61: row_dict['D/L'] += text + " "
+            elif x_ratio < 0.67: row_dict['D/F'] += text + " "
+            elif x_ratio < 0.74: row_dict['LHS'] += text + " "
+            elif x_ratio < 0.81: row_dict['RHS'] += text + " "
+            else: row_dict['Remarks'] += text + " "
+            
+        # හිස්තැන් ඉවත් කිරීම
+        for col in row_dict:
+            row_dict[col] = row_dict[col].strip()
+            
+        # පේළියේ එක දත්තයක් හෝ ඇත්නම් පමණක් එය වගුවට එකතු කිරීම
+        has_data = any(row_dict[col] for col in row_dict)
+        if has_data:
+            # ඉලක්කම් තීරු වල ඇති අකුරු ඉවත් කර පිරිසිදු ඉලක්කම පමණක් ගැනීම
+            for col in ['B/S', 'I/S', 'F/S', 'HOC', 'R/L', 'D/L', 'D/F', 'LHS', 'RHS']:
+                val = row_dict[col]
+                if val:
+                    matches = re.findall(r'-?\d+\.\d+|-?\d+', val)
+                    row_dict[col] = matches[0] if matches else ""
+            parsed_data.append(row_dict)
+            
     return pd.DataFrame(parsed_data)
 
-# ආරක්ෂිතව ඉලක්කම් ලබාගන්නා ශ්‍රිතය
 def safe_float(val):
     try:
         if pd.isna(val) or str(val).strip() == '': return 0.0
@@ -105,7 +118,7 @@ def safe_float(val):
 if uploaded_file is not None:
     image_bytes = uploaded_file.getvalue()
     
-    col1, col2 = st.columns([1, 3])
+    col1, col2 = st.columns([1, 2]) # පින්තූරයට වඩා වගුවට ඉඩ ලබාදීම
     with col1:
         st.image(image_bytes, caption='Uploaded Level Sheet', use_container_width=True)
     
@@ -113,17 +126,19 @@ if uploaded_file is not None:
         if 'current_file' not in st.session_state or st.session_state.current_file != uploaded_file.name:
             st.session_state.current_file = uploaded_file.name
             
-            with st.spinner("අකුරු සහ ඉලක්කම් කියවමින් පවතී..."):
+            with st.spinner("අකුරු සහ ඉලක්කම් ඛණ්ඩාංක මගින් විශ්ලේෂණය කරමින් පවතී..."):
                 image = vision.Image(content=image_bytes)
                 response = client.document_text_detection(image=image)
-                rows = extract_table_from_image(response.text_annotations)
-                st.session_state.raw_df = parse_to_dataframe(rows)
+                st.session_state.raw_df = process_vision_data(response.text_annotations)
         
-        st.success("✅ දත්ත කියවීම අවසන්! දැන් වගුව Sheet එකේ ආකාරයටම ඇත.")
-        st.info("💡 **උපදෙසක්:** ඉලක්කම් වැරදි තීරුවක (Column) ඇත්නම්, ඒ මත Click කර එය නිවැරදි තීරුවට Type කරන්න.")
+        st.success("✅ දත්ත කියවීම අවසන්!")
+        st.info("💡 **උපදෙසක්:** ඉලක්කම් වැරදි තීරුවක (Column) ඇත්නම්, ඒ මත Click කර නිවැරදි කරන්න.")
         
-        # සම්පූර්ණ තීරු 11 ම සහිත Editable Table එක
-        edited_df = st.data_editor(st.session_state.raw_df, num_rows="dynamic", use_container_width=True)
+        if st.session_state.raw_df.empty:
+            st.warning("වගුවේ දත්ත කියවීමට නොහැකි විය. කරුණාකර වෙනත් ඡායාරූපයක් යොදන්න.")
+            st.session_state.raw_df = pd.DataFrame(columns=['Chainage', 'B/S', 'I/S', 'F/S', 'HOC', 'R/L', 'D/L', 'D/F', 'LHS', 'RHS', 'Remarks'])
+            
+        edited_df = st.data_editor(st.session_state.raw_df, num_rows="dynamic", use_container_width=True, height=400)
         
         st.markdown("---")
         bm_value = st.number_input("ආරම්භක R/L අගය මෙහි දෙන්න (Sheet එකේ R/L අගයක් නොමැති නම් පමණක් මෙය භාවිතා වේ):", value=1.741, format="%.3f")
@@ -133,7 +148,6 @@ if uploaded_file is not None:
                 current_hoc = 0.0
                 current_rl = bm_value
                 
-                # ගණනය කිරීම සඳහා දත්ත පිටපතක් ගැනීම
                 final_df = edited_df.copy()
                 
                 for index, row in final_df.iterrows():
@@ -141,25 +155,21 @@ if uploaded_file is not None:
                     iss = safe_float(row['I/S'])
                     fs = safe_float(row['F/S'])
                     
-                    # Sheet එකේ පළමු පේළියේ R/L අගයක් දී ඇත්නම් එය ලබා ගැනීම (උදා: 1.741)
                     if index == 0:
                         row_rl = safe_float(row['R/L'])
-                        if row_rl > 0:
+                        if row_rl != 0:
                             current_rl = row_rl
                     
-                    # HOC ගණනය කිරීම (HOC = R/L + B/S)
-                    if bs > 0:
+                    if bs != 0:
                         current_hoc = current_rl + bs
                     
-                    # R/L ගණනය කිරීම (R/L = HOC - I/S හෝ R/L = HOC - F/S)
                     if iss != 0 and current_hoc != 0:
                         current_rl = current_hoc - iss
                     elif fs != 0 and current_hoc != 0:
                         current_rl = current_hoc - fs
                     
-                    # ප්‍රතිඵල වගුවට ඇතුලත් කිරීම
-                    final_df.at[index, 'HOC'] = round(current_hoc, 3) if current_hoc != 0 else ""
-                    final_df.at[index, 'R/L'] = round(current_rl, 3) if current_hoc != 0 else ""
+                    final_df.at[index, 'HOC'] = f"{current_hoc:.3f}" if current_hoc != 0 else ""
+                    final_df.at[index, 'R/L'] = f"{current_rl:.3f}" if current_hoc != 0 else ""
                 
                 st.write("### අවසන් ප්‍රතිඵලය (Final Calculated Sheet):")
                 st.dataframe(final_df, use_container_width=True)
