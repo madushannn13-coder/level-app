@@ -21,18 +21,18 @@ uploaded_file = st.file_uploader("Upload a photo of the Level Sheet", type=['jpg
 def process_vision_data(text_annotations):
     if len(text_annotations) < 2: return pd.DataFrame()
     
+    # වෙනස 1: සම්පූර්ණ පින්තූරයේ පළල ලබා ගැනීම (Full Image Width)
+    image_width = max([v.x for v in text_annotations[0].bounding_poly.vertices])
+    if image_width == 0: image_width = 1 
+    
     words = []
-    max_x = 0
     for annotation in text_annotations[1:]:
         vertices = annotation.bounding_poly.vertices
         x_center = sum([v.x for v in vertices]) / 4
         y_center = sum([v.y for v in vertices]) / 4
         text = annotation.description
         words.append({'text': text, 'x': x_center, 'y': y_center})
-        if x_center > max_x: max_x = x_center
         
-    if max_x == 0: max_x = 1 
-    
     header_y = 0
     for w in words:
         if w['text'].upper() in ['CHAINAGE', 'B/S', 'I/S']:
@@ -48,7 +48,6 @@ def process_vision_data(text_annotations):
     
     current_row = [words[0]]
     for word in words[1:]:
-        # අත් අකුරු උස් පහත් වීම් හඳුනාගැනීමට අගය 35 දක්වා වැඩි කර ඇත (පේළි දෙකට කැඩීම නැවැත්වීමට)
         if abs(word['y'] - current_row[0]['y']) < 35: 
             current_row.append(word)
         else:
@@ -68,19 +67,20 @@ def process_vision_data(text_annotations):
         row_dict = {'Chainage': '', 'B/S': '', 'I/S': '', 'F/S': '', 'HOC': '', 'R/L': '', 'D/L': '', 'D/F': '', 'LHS': '', 'RHS': '', 'Remarks': ''}
         
         for w in row:
-            x_ratio = w['x'] / max_x
+            # වෙනස 2: අකුරු වල පළල වෙනුවට පින්තූරයේ පළලින් අනුපාතය බැලීම
+            x_ratio = w['x'] / image_width 
             text = w['text']
             
-            # දකුණට පැනීම නැවැත්වීම සඳහා Column අනුපාතයන් වමට බර කර ඇත
-            if x_ratio < 0.17: row_dict['Chainage'] += text + " "
-            elif x_ratio < 0.25: row_dict['B/S'] += text + " "
-            elif x_ratio < 0.33: row_dict['I/S'] += text + " "
-            elif x_ratio < 0.40: row_dict['F/S'] += text + " "
-            elif x_ratio < 0.48: row_dict['HOC'] += text + " "
+            # නව සහ වඩාත් නිවැරදි Column පළල අනුපාතයන්
+            if x_ratio < 0.16: row_dict['Chainage'] += text + " "
+            elif x_ratio < 0.24: row_dict['B/S'] += text + " "
+            elif x_ratio < 0.32: row_dict['I/S'] += text + " "
+            elif x_ratio < 0.39: row_dict['F/S'] += text + " "
+            elif x_ratio < 0.47: row_dict['HOC'] += text + " "
             elif x_ratio < 0.55: row_dict['R/L'] += text + " "
-            elif x_ratio < 0.63: row_dict['D/L'] += text + " "
-            elif x_ratio < 0.69: row_dict['D/F'] += text + " "
-            elif x_ratio < 0.75: row_dict['LHS'] += text + " "
+            elif x_ratio < 0.62: row_dict['D/L'] += text + " "
+            elif x_ratio < 0.68: row_dict['D/F'] += text + " "
+            elif x_ratio < 0.74: row_dict['LHS'] += text + " "
             elif x_ratio < 0.81: row_dict['RHS'] += text + " "
             else: row_dict['Remarks'] += text + " "
             
@@ -131,7 +131,7 @@ if uploaded_file is not None:
                 st.session_state.raw_df = process_vision_data(response.text_annotations)
         
         st.success("✅ දත්ත කියවීම අවසන්!")
-        st.info("💡 **උපදෙසක්:** ඉලක්කම් වැරදි තීරුවක (Column) ඇත්නම්, ඒ මත Click කර නිවැරදි කරන්න. අලුතින් පේළි එකතු කිරීමටද හැක.")
+        st.info("💡 **උපදෙසක්:** ඉලක්කම් වැරදි තීරුවක (Column) ඇත්නම්, ඒ මත Click කර නිවැරදි කරන්න.")
         
         if st.session_state.raw_df.empty:
             st.warning("වගුවේ දත්ත කියවීමට නොහැකි විය. කරුණාකර වෙනත් ඡායාරූපයක් යොදන්න.")
