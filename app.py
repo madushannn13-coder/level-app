@@ -20,9 +20,7 @@ except Exception as e:
 uploaded_file = st.file_uploader("Upload a photo of the Level Sheet", type=['jpg', 'png', 'jpeg'])
 
 def extract_table_from_image(text_annotations):
-    """
-    X, Y ඛණ්ඩාංක (Coordinates) පදනම් කරගෙන වගුවක් ලෙස සකස් කිරීම.
-    """
+    """ X, Y ඛණ්ඩාංක (Coordinates) මත පදනම්ව පේළි සකස් කිරීම. """
     if len(text_annotations) < 2: return []
     
     words = []
@@ -52,48 +50,66 @@ def extract_table_from_image(text_annotations):
     return rows
 
 def parse_to_dataframe(rows):
-    """
-    පේළි වලින් ඉලක්කම් වෙන්කර මූලික Dataframe එක සෑදීම.
-    """
+    """ ඔයාගේ ඇත්තම Sheet එකේ තීරු වලට ගැලපෙන ලෙස දත්ත වෙන් කිරීම """
     parsed_data = []
-    float_pattern = re.compile(r'\d+\.\d+')
+    float_pattern = re.compile(r'-?\d+\.\d+')
     
     for row in rows:
-        matches = float_pattern.findall(row)
-        if not matches: continue
+        # අනවශ්‍ය Header වචන අතහැරීම
+        if any(w in row.upper() for w in ["CONTRACT", "DATE", "ENGINEER", "MÄGA", "SMEC"]): 
+            continue
             
-        numbers = [float(m) for m in matches if float(m) < 1000.0]
-        if not numbers: continue
-            
-        row_data = {'Station': '', 'BS': 0.0, 'IS': 0.0, 'FS': 0.0, 'Remarks': ''}
+        # Chainage අගයන් (උදා: 72+, 72+580) හඳුනාගැනීම
+        chainage_match = re.search(r'\d+\+\d*', row)
+        chainage = chainage_match.group(0) if chainage_match else ""
         
-        if len(numbers) == 1:
-             row_data['IS'] = numbers[0]
-        elif len(numbers) == 2:
-             row_data['BS'] = numbers[0]
-             row_data['FS'] = numbers[1]
-        elif len(numbers) >= 3:
-             row_data['BS'] = numbers[0]
-             row_data['IS'] = numbers[1]
-             row_data['FS'] = numbers[2]
+        # ඉලක්කම් වෙන්කරගැනීම
+        row_without_chainage = row.replace(chainage, "") if chainage else row
+        matches = float_pattern.findall(row_without_chainage)
+        numbers = [float(m) for m in matches if abs(float(m)) < 1000.0]
+        
+        # වචන Remarks වලට දැමීම
+        words = [w for w in row_without_chainage.split() if not re.match(r'-?\d+\.\d+', w) and w != chainage]
+        remarks = " ".join(words)
+        
+        # Sheet එකේ තියෙන හරියටම Columns ටික
+        row_data = {
+            'Chainage': chainage,
+            'B/S': '', 'I/S': '', 'F/S': '', 
+            'HOC': '', 'R/L': '', 
+            'D/L': '', 'D/F': '', 
+            'LHS': '', 'RHS': '', 
+            'Remarks': remarks
+        }
+        
+        # හමුවන ඉලක්කම් වගුවට පිරවීම (පසුව Editor එකෙන් හදාගත හැක)
+        if len(numbers) > 0: row_data['B/S'] = numbers[0]
+        if len(numbers) > 1: row_data['I/S'] = numbers[1]
+        if len(numbers) > 2: row_data['F/S'] = numbers[2]
+        if len(numbers) > 3: row_data['D/L'] = numbers[3]
+        if len(numbers) > 4: row_data['LHS'] = numbers[4]
              
         parsed_data.append(row_data)
         
     if not parsed_data:
-        return pd.DataFrame(columns=['Station', 'BS', 'IS', 'FS', 'Remarks'])
+        return pd.DataFrame(columns=['Chainage', 'B/S', 'I/S', 'F/S', 'HOC', 'R/L', 'D/L', 'D/F', 'LHS', 'RHS', 'Remarks'])
     return pd.DataFrame(parsed_data)
 
+# ආරක්ෂිතව ඉලක්කම් ලබාගන්නා ශ්‍රිතය
+def safe_float(val):
+    try:
+        if pd.isna(val) or str(val).strip() == '': return 0.0
+        return float(val)
+    except: return 0.0
+
 if uploaded_file is not None:
-    # Error එක විසඳීම සඳහා File එක Bytes ලෙස කියවා ගැනීම
     image_bytes = uploaded_file.getvalue()
     
-    col1, col2 = st.columns([1, 2])
+    col1, col2 = st.columns([1, 3])
     with col1:
-        # රූපය පෙන්වීම (use_container_width යාවත්කාලීන කර ඇත)
         st.image(image_bytes, caption='Uploaded Level Sheet', use_container_width=True)
     
     with col2:
-        # අලුත් ඡායාරූපයක් දැමූ විට පමණක් නැවත කියවීම සඳහා Session State පරීක්ෂාව
         if 'current_file' not in st.session_state or st.session_state.current_file != uploaded_file.name:
             st.session_state.current_file = uploaded_file.name
             
@@ -103,51 +119,49 @@ if uploaded_file is not None:
                 rows = extract_table_from_image(response.text_annotations)
                 st.session_state.raw_df = parse_to_dataframe(rows)
         
-        st.success("✅ දත්ත කියවීම අවසන්!")
-        st.info("💡 **උපදෙසක්:** පහත වගුවේ ඉලක්කම් වැරදි තීරුවක (Column) ඇත්නම්, ඒ මත Click කර නිවැරදි කරන්න.")
+        st.success("✅ දත්ත කියවීම අවසන්! දැන් වගුව Sheet එකේ ආකාරයටම ඇත.")
+        st.info("💡 **උපදෙසක්:** ඉලක්කම් වැරදි තීරුවක (Column) ඇත්නම්, ඒ මත Click කර එය නිවැරදි තීරුවට Type කරන්න.")
         
+        # සම්පූර්ණ තීරු 11 ම සහිත Editable Table එක
         edited_df = st.data_editor(st.session_state.raw_df, num_rows="dynamic", use_container_width=True)
         
         st.markdown("---")
-        bm_value = st.number_input("ආරම්භක Benchmark (BM) R.L අගය ඇතුලත් කරන්න:", value=100.000, format="%.3f")
+        bm_value = st.number_input("ආරම්භක R/L අගය මෙහි දෙන්න (Sheet එකේ R/L අගයක් නොමැති නම් පමණක් මෙය භාවිතා වේ):", value=1.741, format="%.3f")
         
-        if st.button("🚀 Calculate Reduced Levels & Download Excel", type="primary"):
+        if st.button("🚀 Calculate HOC & R/L and Download Excel", type="primary"):
             try:
-                HIs = []
-                RLs = []
-                current_HI = 0.0
-                current_RL = bm_value
+                current_hoc = 0.0
+                current_rl = bm_value
                 
-                for index, row in edited_df.iterrows():
-                    # හිස් කොටු (Empty cells) ඇත්නම් ඒවා 0.0 ලෙස සලකයි
-                    bs = float(row['BS']) if pd.notna(row['BS']) and str(row['BS']).strip() != '' else 0.0
-                    is_val = float(row['IS']) if pd.notna(row['IS']) and str(row['IS']).strip() != '' else 0.0
-                    fs = float(row['FS']) if pd.notna(row['FS']) and str(row['FS']).strip() != '' else 0.0
-                    
-                    if index == 0:
-                        current_HI = current_RL + bs
-                        RLs.append(current_RL)
-                        HIs.append(current_HI)
-                    else:
-                        if is_val > 0:
-                            current_RL = current_HI - is_val
-                            RLs.append(current_RL)
-                            HIs.append(current_HI)
-                        elif fs > 0:
-                            current_RL = current_HI - fs
-                            RLs.append(current_RL)
-                            if bs > 0: # Change Point
-                                current_HI = current_RL + bs
-                            HIs.append(current_HI)
-                        else:
-                            RLs.append(current_RL)
-                            HIs.append(current_HI)
-
+                # ගණනය කිරීම සඳහා දත්ත පිටපතක් ගැනීම
                 final_df = edited_df.copy()
-                final_df['H.I'] = [round(val, 3) for val in HIs]
-                final_df['R.L'] = [round(val, 3) for val in RLs]
                 
-                st.write("### අවසන් ප්‍රතිඵලය (Final Reduced Levels):")
+                for index, row in final_df.iterrows():
+                    bs = safe_float(row['B/S'])
+                    iss = safe_float(row['I/S'])
+                    fs = safe_float(row['F/S'])
+                    
+                    # Sheet එකේ පළමු පේළියේ R/L අගයක් දී ඇත්නම් එය ලබා ගැනීම (උදා: 1.741)
+                    if index == 0:
+                        row_rl = safe_float(row['R/L'])
+                        if row_rl > 0:
+                            current_rl = row_rl
+                    
+                    # HOC ගණනය කිරීම (HOC = R/L + B/S)
+                    if bs > 0:
+                        current_hoc = current_rl + bs
+                    
+                    # R/L ගණනය කිරීම (R/L = HOC - I/S හෝ R/L = HOC - F/S)
+                    if iss != 0 and current_hoc != 0:
+                        current_rl = current_hoc - iss
+                    elif fs != 0 and current_hoc != 0:
+                        current_rl = current_hoc - fs
+                    
+                    # ප්‍රතිඵල වගුවට ඇතුලත් කිරීම
+                    final_df.at[index, 'HOC'] = round(current_hoc, 3) if current_hoc != 0 else ""
+                    final_df.at[index, 'R/L'] = round(current_rl, 3) if current_hoc != 0 else ""
+                
+                st.write("### අවසන් ප්‍රතිඵලය (Final Calculated Sheet):")
                 st.dataframe(final_df, use_container_width=True)
                 
                 excel_file = io.BytesIO()
@@ -157,8 +171,8 @@ if uploaded_file is not None:
                 st.download_button(
                     label="📥 Download Final Excel Sheet",
                     data=excel_file,
-                    file_name="Final_Reduced_Levels.xlsx",
+                    file_name="Calculated_Level_Sheet.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
             except Exception as e:
-                st.error(f"ගණනය කිරීමේ දෝෂයක්: {e}. කරුණාකර වගුවේ ඇත්තේ ඉලක්කම් පමණක් දැයි තහවුරු කරගන්න.")
+                st.error(f"ගණනය කිරීමේ දෝෂයක්: {e}")
