@@ -9,6 +9,7 @@ import re
 st.set_page_config(page_title="Level Sheet Reducer", page_icon="📏", layout="wide")
 st.title("Level Sheet Reducer & Editor 📏")
 
+# API Key එක ලබාගැනීම
 try:
     key_dict = json.loads(st.secrets["textkey"])
     creds = service_account.Credentials.from_service_account_info(key_dict)
@@ -35,27 +36,26 @@ def process_vision_data(text_annotations):
         words.append({'text': text, 'x': x_center, 'y': y_center})
         if x_center > max_x: max_x = x_center
         
-    if max_x == 0: max_x = 1 # බිංදුවෙන් බෙදීම වැලැක්වීම
+    if max_x == 0: max_x = 1 
     
-    # 1. 'Chainage' හෝ 'B/S' වචනය ඇති තැන (Y අගය) සොයාගැනීම 
+    # 1. Header එක ඉවත් කිරීම
     header_y = 0
     for w in words:
         if w['text'].upper() in ['CHAINAGE', 'B/S', 'I/S']:
             header_y = w['y']
             break
             
-    # වගුවට ඉහළින් ඇති අනවශ්‍ය Header කොටස් (REHABILITATION, CONTRACT...) ඉවත් කිරීම
     if header_y > 0:
         words = [w for w in words if w['y'] > header_y - 15]
         
-    # 2. Y අගය අනුව පේළි (Rows) සෑදීම
+    # 2. Y අගය අනුව පේළි සෑදීම
     words.sort(key=lambda w: w['y'])
     rows = []
     if not words: return pd.DataFrame()
     
     current_row = [words[0]]
     for word in words[1:]:
-        if abs(word['y'] - current_row[0]['y']) < 25: # අකුරු වල උස අනුව වෙනස (Tolerance)
+        if abs(word['y'] - current_row[0]['y']) < 25: 
             current_row.append(word)
         else:
             current_row.sort(key=lambda w: w['x'])
@@ -65,11 +65,10 @@ def process_vision_data(text_annotations):
         current_row.sort(key=lambda w: w['x'])
         rows.append(current_row)
         
-    # 3. X අගය (තිරස් පිහිටීම) අනුව අදාල තීරුවට (Column) වෙන් කිරීම
+    # 3. X අගය අනුව අදාල තීරුවට වෙන් කිරීම
     parsed_data = []
     for row in rows:
         row_text = " ".join([w['text'] for w in row]).upper()
-        # මගහැරුණු Header පේළි ඇත්නම් ඉවත් කිරීම
         if "CHAINAGE" in row_text or "REMARKS" in row_text or "LEVEL" in row_text:
             continue
             
@@ -79,27 +78,37 @@ def process_vision_data(text_annotations):
             x_ratio = w['x'] / max_x
             text = w['text']
             
-            # කොළයේ පළල ප්‍රතිශතයක් ලෙස ගෙන තීරු වලට බෙදීම (Spatial Binning)
-            if x_ratio < 0.16: row_dict['Chainage'] += text + " "
-            elif x_ratio < 0.23: row_dict['B/S'] += text + " "
-            elif x_ratio < 0.31: row_dict['I/S'] += text + " "
-            elif x_ratio < 0.38: row_dict['F/S'] += text + " "
-            elif x_ratio < 0.46: row_dict['HOC'] += text + " "
-            elif x_ratio < 0.54: row_dict['R/L'] += text + " "
-            elif x_ratio < 0.61: row_dict['D/L'] += text + " "
-            elif x_ratio < 0.67: row_dict['D/F'] += text + " "
-            elif x_ratio < 0.74: row_dict['LHS'] += text + " "
-            elif x_ratio < 0.81: row_dict['RHS'] += text + " "
+            # නව සහ වඩාත් නිවැරදි Column පළල අනුපාතයන්
+            if x_ratio < 0.18: row_dict['Chainage'] += text + " "
+            elif x_ratio < 0.27: row_dict['B/S'] += text + " "
+            elif x_ratio < 0.35: row_dict['I/S'] += text + " "
+            elif x_ratio < 0.43: row_dict['F/S'] += text + " "
+            elif x_ratio < 0.51: row_dict['HOC'] += text + " "
+            elif x_ratio < 0.58: row_dict['R/L'] += text + " "
+            elif x_ratio < 0.65: row_dict['D/L'] += text + " "
+            elif x_ratio < 0.71: row_dict['D/F'] += text + " "
+            elif x_ratio < 0.77: row_dict['LHS'] += text + " "
+            elif x_ratio < 0.83: row_dict['RHS'] += text + " "
             else: row_dict['Remarks'] += text + " "
             
-        # හිස්තැන් ඉවත් කිරීම
+        # --- 4. Chainage Split Fix (72+ සහ 580 එකතු කිරීම) ---
+        ch_str = row_dict['Chainage'].strip()
+        bs_str = row_dict['B/S'].strip()
+        
+        # Chainage එක + වලින් ඉවර වෙලා, B/S එකේ තියෙන්නේ සාමාන්‍ය ඉලක්කමක් නම්
+        if ch_str.endswith('+') and bs_str.isdigit():
+            row_dict['Chainage'] = ch_str + bs_str
+            row_dict['B/S'] = ''
+        elif bs_str.startswith('+'):
+            row_dict['Chainage'] = ch_str + bs_str
+            row_dict['B/S'] = ''
+            
+        # දත්ත පිරිසිදු කිරීම
         for col in row_dict:
             row_dict[col] = row_dict[col].strip()
             
-        # පේළියේ එක දත්තයක් හෝ ඇත්නම් පමණක් එය වගුවට එකතු කිරීම
         has_data = any(row_dict[col] for col in row_dict)
         if has_data:
-            # ඉලක්කම් තීරු වල ඇති අකුරු ඉවත් කර පිරිසිදු ඉලක්කම පමණක් ගැනීම
             for col in ['B/S', 'I/S', 'F/S', 'HOC', 'R/L', 'D/L', 'D/F', 'LHS', 'RHS']:
                 val = row_dict[col]
                 if val:
@@ -118,7 +127,7 @@ def safe_float(val):
 if uploaded_file is not None:
     image_bytes = uploaded_file.getvalue()
     
-    col1, col2 = st.columns([1, 2]) # පින්තූරයට වඩා වගුවට ඉඩ ලබාදීම
+    col1, col2 = st.columns([1, 2])
     with col1:
         st.image(image_bytes, caption='Uploaded Level Sheet', use_container_width=True)
     
